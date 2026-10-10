@@ -4,6 +4,7 @@ import PromiseRouter from '../PromiseRouter';
 import * as middleware from '../middlewares';
 import * as triggers from '../triggers';
 import { createSanitizedError } from '../Error';
+import { evaluateAll } from '../Experiments/ExperimentsEvaluator';
 
 const getConfigFromParams = params => {
   const config = new Parse.Config();
@@ -37,6 +38,39 @@ export class GlobalConfigRouter extends PromiseRouter {
             masterKeyOnly: globalConfig.masterKeyOnly,
           },
         };
+      })
+      .then(async result => {
+        // Native experiment evaluation (opt-in): GET /config?abEvaluate=true
+        // with an authenticated user attaches per-user arm verdicts WITHOUT
+        // changing the global params contract — old SDKs ignore the field.
+        // Skipped for master/anonymous and on any failure (fail-open to the
+        // plain global payload, never break standard fetch).
+        try {
+          const wantsEval = req.query && req.query.abEvaluate === 'true';
+          const user = req.auth && req.auth.user;
+          if (!wantsEval || !user || req.auth.isMaster) {
+            return result;
+          }
+          const params = (result.response && result.response.params) || {};
+          if (params.ab_enabled !== true || !Array.isArray(params.ab_experiments)) {
+            return { response: { ...result.response, abEvaluated: [] } };
+          }
+          const profiles = await req.config.database.find(
+            'users',
+            { user_uid: user.id },
+            { limit: 1 }
+          );
+          const joined = profiles.length === 1 ? profiles[0].user_joined : null;
+          const joinedMs = joined instanceof Date ? joined.getTime() : Number(joined) || 0;
+          return {
+            response: {
+              ...result.response,
+              abEvaluated: evaluateAll(params.ab_experiments, user.id, joinedMs),
+            },
+          };
+        } catch (e) {
+          return result;
+        }
       });
   }
 
