@@ -2,6 +2,12 @@
 
 Changelogs are separated by release type for better overview.
 
+## 2026-10-10 — Cognitive-lead structure
+
+- Added `AGENTS.md` (agent contract), `opencode.json`, `docs/conventions.md`.
+- Added `tasks/` Kanban dirs and minimal `src/` folder docs (`README.md` + `DECISIONS.md`).
+- No runtime code changed.
+
 ## ✅ [Stable Releases][log_release]
 
 > ### “Stable for production!”
