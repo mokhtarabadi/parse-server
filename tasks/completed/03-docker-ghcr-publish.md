@@ -1,7 +1,7 @@
 # Task 03: Docker Publish to GHCR
 
-**File:** `tasks/qa/03-docker-ghcr-publish.md`
-**Status:** in-progress
+**File:** `tasks/completed/03-docker-ghcr-publish.md`
+**Status:** closed
 **Type:** chore
 **Source:** manager-direct
 **Scope:** `.github/workflows/` GHCR migration + forced alpha image (no release)
@@ -46,6 +46,7 @@ Publish parse-server alpha as a Docker image to GitHub Container Registry and mi
 - `grep docker.io|DOCKERHUB` in both workflows → no matches.
 - Brain QA: QA_PASSED. F1 auth (GITHUB_TOKEN + packages:write) holds; F2 names/tags hold. Advisory R1: forced alpha image is amd64-only (matches Assumption A2; CI still multi-arch). Advisory R2: GHCR package may default private — could not verify (token lacks read:packages); Manager to check Packages page if public pulls needed. No fix loop required.
 - Brain review: PO_REVIEW_PENDING (technically approved; I1/I2 restate QA advisories; no blockers).
+- Closure: Manager accept quote 'Approved for closure' received; moving qa → completed via commit_and_clean_task.
 
 ## Execution Log & Reasoning
 
@@ -56,70 +57,5 @@ Publish parse-server alpha as a Docker image to GitHub Container Registry and mi
 ## Factual Git Diff
 
 <!-- BEGIN_GIT_DIFF -->
-```diff
-diff --git a/.github/workflows/release-automated.yml b/.github/workflows/release-automated.yml
-index 7adb208..f32e4a8 100644
---- a/.github/workflows/release-automated.yml
-+++ b/.github/workflows/release-automated.yml
-@@ -40,8 +40,8 @@ jobs:
-     needs: release
-     if: needs.release.outputs.current_tag != ''
-     env:
--      REGISTRY: docker.io
--      IMAGE_NAME: parseplatform/parse-server
-+      REGISTRY: ghcr.io
-+      IMAGE_NAME: mokhtarabadi/parse-server
-     runs-on: ubuntu-latest
-     permissions:
-       contents: read
-@@ -56,12 +56,13 @@ jobs:
-           ref: ${{ needs.release.outputs.current_tag }}
-       - name: Set up Docker Buildx
-         uses: docker/setup-buildx-action@v2
--      - name: Log into Docker Hub
-+      - name: Log into GitHub Container Registry
-         if: github.event_name != 'pull_request'
-         uses: docker/login-action@v2
-         with:
--          username: ${{ secrets.DOCKERHUB_USERNAME }}
--          password: ${{ secrets.DOCKERHUB_TOKEN }}
-+          registry: ghcr.io
-+          username: ${{ github.actor }}
-+          password: ${{ secrets.GITHUB_TOKEN }}
-       - name: Extract Docker metadata
-         id: meta
-         uses: docker/metadata-action@v4
-diff --git a/.github/workflows/release-manual-docker.yml b/.github/workflows/release-manual-docker.yml
-index 0211a28..ae2562d 100644
---- a/.github/workflows/release-manual-docker.yml
-+++ b/.github/workflows/release-manual-docker.yml
-@@ -10,8 +10,8 @@ on:
-         default: ''
-         description: 'Reference (tag / SHA):'  
- env:
--  REGISTRY: docker.io
--  IMAGE_NAME: parseplatform/parse-server
-+  REGISTRY: ghcr.io
-+  IMAGE_NAME: mokhtarabadi/parse-server
- jobs:
-   build:
-     runs-on: ubuntu-latest
-@@ -28,12 +28,13 @@ jobs:
-           ref: ${{ github.event.inputs.ref }}
-       - name: Set up Docker Buildx
-         uses: docker/setup-buildx-action@v2
--      - name: Log into Docker Hub
-+      - name: Log into GitHub Container Registry
-         if: github.event_name != 'pull_request'
-         uses: docker/login-action@v2
-         with:
--          username: ${{ secrets.DOCKERHUB_USERNAME }}
--          password: ${{ secrets.DOCKERHUB_TOKEN }}
-+          registry: ghcr.io
-+          username: ${{ github.actor }}
-+          password: ${{ secrets.GITHUB_TOKEN }}
-       - name: Extract Docker metadata
-         id: meta
-         uses: docker/metadata-action@v4
-```
+**Factual Git Diff:** Stored in Commit Hash: `816e4524be36e4f7a955d53db0299926ae9f8844`
 <!-- END_GIT_DIFF -->
