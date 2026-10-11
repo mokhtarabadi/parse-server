@@ -1,3 +1,17 @@
+## [9.10.5-alpha.5](https://github.com/parse-community/parse-server/compare/9.10.5-alpha.4...9.10.5-alpha.5) (2026-10-11)
+
+
+### Bug Fixes
+
+* SMS MFA login code request saves other login request fields with master privileges ([GHSA-9rh6-r4ph-367v](https://github.com/parse-community/parse-server/security/advisories/GHSA-9rh6-r4ph-367v)) ([#10781](https://github.com/parse-community/parse-server/issues/10781)) ([e2a1474](https://github.com/parse-community/parse-server/commit/e2a14744e8e3a2f7b3a24c830ce523aea72229e5))
+
+## [9.10.5-alpha.4](https://github.com/parse-community/parse-server/compare/9.10.5-alpha.3...9.10.5-alpha.4) (2026-10-10)
+
+
+### Bug Fixes
+
+* LiveQuery subscriptions using a `$or` query can receive another user's events, including session tokens ([GHSA-349r-988w-x3jp](https://github.com/parse-community/parse-server/security/advisories/GHSA-349r-988w-x3jp)) ([#10776](https://github.com/parse-community/parse-server/issues/10776)) ([a7821c6](https://github.com/parse-community/parse-server/commit/a7821c6aebb4470c3d1e04e60295b02e7b365667))
+
 ## [9.10.5-alpha.3](https://github.com/parse-community/parse-server/compare/9.10.5-alpha.2...9.10.5-alpha.3) (2026-10-10)
 
 

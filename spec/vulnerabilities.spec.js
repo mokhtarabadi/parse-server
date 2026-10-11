@@ -9325,4 +9325,265 @@ describe('Vulnerabilities', () => {
       expect(adapter.scopes).toBe('read,write');
     });
   });
+
+  describe('(GHSA-349r-988w-x3jp) LiveQuery subscriptions sharing a hash leak events across a $or query', () => {
+    const { sleep } = require('../lib/TestUtils');
+    let extraClients = [];
+
+    afterEach(async () => {
+      for (const client of extraClients) {
+        try {
+          await client.close();
+        } catch (e) {
+          // Ignore cleanup errors when the client never opened
+        }
+      }
+      extraClients = [];
+      try {
+        const client = await Parse.CoreManager.getLiveQueryController().getDefaultLiveQueryClient();
+        if (client) {
+          await client.close();
+        }
+      } catch (e) {
+        // Ignore cleanup errors when the default client is not initialized
+      }
+    });
+
+    async function subscribeAsUser(sessionToken, query) {
+      const client = new Parse.LiveQueryClient({
+        applicationId: Parse.applicationId,
+        serverURL: 'ws://localhost:8378',
+        javascriptKey: 'test',
+        sessionToken,
+      });
+      extraClients.push(client);
+      client.open();
+      const subscription = client.subscribe(query, sessionToken);
+      await new Promise(resolve => subscription.on('open', resolve));
+      return subscription;
+    }
+
+    it('does not deliver another user session to a later _Session subscriber using the same $or', async () => {
+      Parse.CoreManager.getLiveQueryController().setDefaultLiveQueryClient(null);
+      await reconfigureServer({
+        liveQuery: { classNames: ['_Session'] },
+        startLiveQueryServer: true,
+        verbose: false,
+        silent: true,
+      });
+
+      const victim = new Parse.User();
+      victim.setUsername('lq_or_victim');
+      victim.setPassword('password123');
+      await victim.signUp();
+      const victimToken = victim.getSessionToken();
+
+      const attacker = new Parse.User();
+      attacker.setUsername('lq_or_attacker');
+      attacker.setPassword('password123');
+      await attacker.signUp();
+      const attackerToken = attacker.getSessionToken();
+
+      // Both subscriptions carry the same $or; the server adds each subscriber's
+      // own `user` pointer next to it. The victim subscribes first, so a shared
+      // subscription would keep the victim's `user` filter.
+      const orQuery = () =>
+        Parse.Query.or(
+          new Parse.Query('_Session').exists('sessionToken'),
+          new Parse.Query('_Session').exists('user')
+        );
+      const victimSub = await subscribeAsUser(victimToken, orQuery());
+      const attackerSub = await subscribeAsUser(attackerToken, orQuery());
+
+      const attackerReceived = [];
+      attackerSub.on('create', object => attackerReceived.push(object));
+      attackerSub.on('enter', object => attackerReceived.push(object));
+      const victimReceived = new Promise(resolve => victimSub.on('create', resolve));
+
+      // Create a new session for the victim, which matches the victim's own filter.
+      const newVictimSession = await Parse.User.logIn('lq_or_victim', 'password123');
+      const newVictimToken = newVictimSession.getSessionToken();
+
+      const victimEvent = await victimReceived;
+      await sleep(500);
+
+      // The victim receives its own new session (proves the event fired).
+      expect(victimEvent.get('sessionToken')).toBe(newVictimToken);
+      // The attacker must not receive the victim's session nor its token.
+      expect(attackerReceived.length).toBe(0);
+    });
+
+    it('does not deliver events across a beforeSubscribe tenant filter to a later subscriber using the same $or', async () => {
+      Parse.CoreManager.getLiveQueryController().setDefaultLiveQueryClient(null);
+      Parse.Cloud.beforeSubscribe('TenantDoc', request => {
+        const user = request.user;
+        if (user) {
+          const query = request.query;
+          query.equalTo('tenant', user.get('tenant'));
+        }
+      });
+      await reconfigureServer({
+        liveQuery: { classNames: ['TenantDoc'] },
+        startLiveQueryServer: true,
+        verbose: false,
+        silent: true,
+      });
+
+      const userA = new Parse.User();
+      userA.setUsername('lq_tenant_a');
+      userA.setPassword('password123');
+      userA.set('tenant', 'tenant-a');
+      await userA.signUp();
+      const tokenA = userA.getSessionToken();
+
+      const userB = new Parse.User();
+      userB.setUsername('lq_tenant_b');
+      userB.setPassword('password123');
+      userB.set('tenant', 'tenant-b');
+      await userB.signUp();
+      const tokenB = userB.getSessionToken();
+
+      // TenantDoc is public-read, so only the beforeSubscribe `tenant` filter
+      // isolates subscribers. Both use the same $or next to which it is added.
+      const orQuery = () =>
+        Parse.Query.or(
+          new Parse.Query('TenantDoc').exists('objectId'),
+          new Parse.Query('TenantDoc').exists('createdAt')
+        );
+      const subA = await subscribeAsUser(tokenA, orQuery());
+      const subB = await subscribeAsUser(tokenB, orQuery());
+
+      const aReceived = [];
+      subA.on('create', object => aReceived.push(object));
+      const bReceived = [];
+      subB.on('create', object => bReceived.push(object));
+
+      const docA = new Parse.Object('TenantDoc');
+      docA.set('tenant', 'tenant-a');
+      await docA.save(null, { useMasterKey: true });
+      const docB = new Parse.Object('TenantDoc');
+      docB.set('tenant', 'tenant-b');
+      await docB.save(null, { useMasterKey: true });
+
+      await sleep(500);
+
+      // Each subscriber receives only its own tenant's object.
+      expect(aReceived.map(o => o.get('tenant'))).toEqual(['tenant-a']);
+      expect(bReceived.map(o => o.get('tenant'))).toEqual(['tenant-b']);
+    });
+  });
+
+  describe('(GHSA-9rh6-r4ph-367v) SMS MFA login code request persists login body fields with master privileges', () => {
+    const headers = {
+      'X-Parse-Application-Id': 'test',
+      'X-Parse-REST-API-Key': 'rest',
+      'Content-Type': 'application/json',
+    };
+    let code;
+    let mobile;
+    const mfa = {
+      enabled: true,
+      options: ['SMS'],
+      sendSMS(smsCode, number) {
+        code = smsCode;
+        mobile = number;
+      },
+      digits: 6,
+      period: 30,
+    };
+
+    beforeEach(async () => {
+      code = '';
+      mobile = '';
+      await reconfigureServer({ auth: { mfa } });
+    });
+
+    async function enrollSmsMfa() {
+      const user = await Parse.User.signUp('victim', 'password');
+      const sessionToken = user.getSessionToken();
+      await user.save({ authData: { mfa: { mobile: '+11111111111' } } }, { sessionToken });
+      await user.save({ authData: { mfa: { mobile, token: code } } }, { sessionToken });
+      return { user, sessionToken };
+    }
+
+    it('does not persist extra login body fields when requesting an SMS code', async () => {
+      const { user, sessionToken } = await enrollSmsMfa();
+
+      // emailVerified is master-only
+      const rejected = await request({
+        method: 'PUT',
+        url: `${Parse.serverURL}/users/${user.id}`,
+        headers: { ...headers, 'X-Parse-Session-Token': sessionToken },
+        body: JSON.stringify({ emailVerified: true }),
+      }).catch(e => e.data);
+      expect(rejected.code).toBe(Parse.Error.OPERATION_FORBIDDEN);
+
+      const spy = spyOn(mfa, 'sendSMS').and.callThrough();
+      // Smuggle the field in the code request body
+      const res = await request({
+        method: 'POST',
+        url: `${Parse.serverURL}/login`,
+        headers,
+        body: JSON.stringify({
+          username: 'victim',
+          password: 'password',
+          authData: { mfa: { token: 'request' } },
+          emailVerified: true,
+        }),
+      }).catch(e => e.data);
+      expect(res).toEqual({ code: Parse.Error.SCRIPT_FAILED, error: 'Please enter the token' });
+      expect(spy).toHaveBeenCalled();
+
+      // Must not be persisted
+      await user.fetch({ useMasterKey: true });
+      expect(user.get('emailVerified')).not.toBe(true);
+    });
+
+    it('runs the _User beforeSave trigger when persisting the requested SMS code', async () => {
+      await enrollSmsMfa();
+      let beforeSaveCalls = 0;
+      Parse.Cloud.beforeSave('_User', () => {
+        beforeSaveCalls++;
+      });
+      const res = await request({
+        method: 'POST',
+        url: `${Parse.serverURL}/login`,
+        headers,
+        body: JSON.stringify({
+          username: 'victim',
+          password: 'password',
+          authData: { mfa: { token: 'request' } },
+        }),
+      }).catch(e => e.data);
+      expect(res).toEqual({ code: Parse.Error.SCRIPT_FAILED, error: 'Please enter the token' });
+      // beforeSave must still run on the internal persist
+      expect(beforeSaveCalls).toBeGreaterThan(0);
+    });
+
+    it('still completes SMS MFA login end-to-end after requesting a code', async () => {
+      const { user } = await enrollSmsMfa();
+      await request({
+        method: 'POST',
+        url: `${Parse.serverURL}/login`,
+        headers,
+        body: JSON.stringify({
+          username: 'victim',
+          password: 'password',
+          authData: { mfa: { token: 'request' } },
+        }),
+      }).catch(e => e.data);
+      const response = await request({
+        method: 'POST',
+        url: `${Parse.serverURL}/login`,
+        headers,
+        body: JSON.stringify({
+          username: 'victim',
+          password: 'password',
+          authData: { mfa: { token: code } },
+        }),
+      }).then(r => r.data);
+      expect(response.objectId).toEqual(user.id);
+      expect(response.sessionToken).toBeDefined();
+    });
+  });
 });
