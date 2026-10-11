@@ -8,6 +8,12 @@ Changelogs are separated by release type for better overview.
 - Added `tasks/` Kanban dirs and minimal `src/` folder docs (`README.md` + `DECISIONS.md`).
 - No runtime code changed.
 
+## 2026-10-11 — Parse Config A/B support
+
+- Added shared `src/Experiments/ExperimentsConfigResolver.js`; REST `GET /config` now evaluates through it (identical behavior).
+- Added GraphQL client-safe `clientConfig` query with `abEvaluate`; master-only `cloudConfig` unchanged.
+- Added evaluator, resolver, router, and GraphQL specs. No runtime behavior change unless opted in.
+
 ## ✅ [Stable Releases][log_release]
 
 > ### “Stable for production!”

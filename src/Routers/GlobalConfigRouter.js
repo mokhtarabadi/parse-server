@@ -1,10 +1,11 @@
 // global_config.js
 import Parse from 'parse/node';
 import PromiseRouter from '../PromiseRouter';
+import Utils from '../Utils';
 import * as middleware from '../middlewares';
 import * as triggers from '../triggers';
 import { createSanitizedError } from '../Error';
-import { evaluateAll } from '../Experiments/ExperimentsEvaluator';
+import { resolveAbEvaluated } from '../Experiments/ExperimentsConfigResolver';
 
 const getConfigFromParams = params => {
   const config = new Parse.Config();
@@ -44,31 +45,43 @@ export class GlobalConfigRouter extends PromiseRouter {
         // with an authenticated user attaches per-user arm verdicts WITHOUT
         // changing the global params contract — old SDKs ignore the field.
         // Skipped for master/anonymous and on any failure (fail-open to the
-        // plain global payload, never break standard fetch).
+        // plain global payload, never break standard fetch). Evaluation
+        // itself is delegated to the shared Experiments resolver so REST,
+        // GraphQL, and Cloud Code (via /config) share one code path.
         try {
           const wantsEval = req.query && req.query.abEvaluate === 'true';
           const user = req.auth && req.auth.user;
-          if (!wantsEval || !user || req.auth.isMaster) {
-            return result;
-          }
           const params = (result.response && result.response.params) || {};
-          if (params.ab_enabled !== true || !Array.isArray(params.ab_experiments)) {
+          // Resolve the account-age anchor for new-targeted experiments.
+          // Missing user doc yields undefined joined time (fail-open).
+          let joinedMs;
+          if (wantsEval && user && !req.auth.isMaster) {
+            const profiles = await req.config.database.find(
+              'users',
+              { user_uid: user.id },
+              { limit: 1 }
+            );
+            const joined = profiles.length === 1 ? profiles[0].user_joined : null;
+            joinedMs = Utils.isDate(joined) ? joined.getTime() : Number(joined) || 0;
+          }
+          const nextParams = resolveAbEvaluated(params, {
+            abEvaluateRequested: wantsEval === true,
+            user: user,
+            isMaster: req.auth && req.auth.isMaster,
+            userJoinedMs: joinedMs,
+          });
+          // Preserve the exact pre-resolver response shape: only attach
+          // abEvaluated when evaluation actually produced verdicts, plus the
+          // legacy fallback of an empty list when opted in with an
+          // authenticated non-master user but experiments are off/absent.
+          if (nextParams && nextParams.abEvaluated !== undefined) {
+            return { response: { ...result.response, abEvaluated: nextParams.abEvaluated } };
+          }
+          if (wantsEval && user && !(req.auth && req.auth.isMaster)) {
             return { response: { ...result.response, abEvaluated: [] } };
           }
-          const profiles = await req.config.database.find(
-            'users',
-            { user_uid: user.id },
-            { limit: 1 }
-          );
-          const joined = profiles.length === 1 ? profiles[0].user_joined : null;
-          const joinedMs = joined instanceof Date ? joined.getTime() : Number(joined) || 0;
-          return {
-            response: {
-              ...result.response,
-              abEvaluated: evaluateAll(params.ab_experiments, user.id, joinedMs),
-            },
-          };
-        } catch (e) {
+          return result;
+        } catch {
           return result;
         }
       });
@@ -82,8 +95,13 @@ export class GlobalConfigRouter extends PromiseRouter {
         req.config
       );
     }
-    const params = req.body.params || {};
-    const masterKeyOnly = req.body?.masterKeyOnly || {};
+    // Copy: verdict stripping must not mutate the caller's request body.
+    const params = { ...(req.body.params || {}) };
+    const masterKeyOnly = { ...(req.body?.masterKeyOnly || {}) };
+    // Verdicts are read-only output: never persist a client-echoed
+    // abEvaluated field into the stored global params.
+    delete params.abEvaluated;
+    delete masterKeyOnly.abEvaluated;
     // Transform in dot notation to make sure it works
     const update = Object.keys(params).reduce((acc, key) => {
       acc[`params.${key}`] = params[key];
