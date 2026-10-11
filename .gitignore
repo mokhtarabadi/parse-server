@@ -65,3 +65,6 @@ dump.rdb
 
 # AI agents
 .claude
+
+# Agent session transcripts (machine scratch, never committed)
+tasks/.sessions/
